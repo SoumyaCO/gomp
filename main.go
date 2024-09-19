@@ -100,17 +100,21 @@ func (m *model) playMusic(filepath string) {
 		done <- true
 	})))
 
-	select {
-	case <-m.pauseSignal:
-		fmt.Println("Inside the case statement")
-		speaker.Lock()
-		ctrl.Paused = !ctrl.Paused
-		speaker.Unlock()
-	case <-done:
-		m.isPlaying = false
-	case <-m.closingSignal:
-		speaker.Clear()
-		m.isPlaying = false
+	for {
+		select {
+		case <-m.pauseSignal:
+			speaker.Lock()
+			ctrl.Paused = !ctrl.Paused
+			speaker.Unlock()
+		case <-done:
+			m.isPlaying = false
+			return
+		case <-m.closingSignal:
+			speaker.Clear()
+			m.isPlaying = false
+			return
+		}
+
 	}
 }
 
