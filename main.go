@@ -17,6 +17,7 @@ type model struct {
 	items         []string
 	selected      int
 	isPlaying     bool
+	pauseSignal   chan struct{}
 	closingSignal chan struct{}
 }
 
@@ -48,7 +49,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.isPlaying = true
 			go m.playMusic(m.items[m.selected])
-
+		case "p":
+			m.pauseSignal <- struct{}{}
 		}
 	}
 
@@ -90,13 +92,20 @@ func (m *model) playMusic(filepath string) {
 
 	// Initialize the speaker with the sample rate
 	speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
+	ctrl := &beep.Ctrl{Streamer: streamer, Paused: false}
 
 	done := make(chan bool)
-	speaker.Play(beep.Seq(streamer, beep.Callback(func() {
+
+	speaker.Play(beep.Seq(ctrl, beep.Callback(func() {
 		done <- true
 	})))
 
 	select {
+	case <-m.pauseSignal:
+		fmt.Println("Inside the case statement")
+		speaker.Lock()
+		ctrl.Paused = !ctrl.Paused
+		speaker.Unlock()
 	case <-done:
 		m.isPlaying = false
 	case <-m.closingSignal:
@@ -112,9 +121,10 @@ func main() {
 	}
 
 	m := model{
-		items:     items,
-		done:      make(chan struct{}),
-		isPlaying: false,
+		items:         items,
+		closingSignal: make(chan struct{}),
+		isPlaying:     false,
+		pauseSignal:   make(chan struct{}), // unbuffered channel
 	}
 
 	if _, err := tea.NewProgram(m).Run(); err != nil {
