@@ -7,15 +7,56 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/gopxl/beep"
 	"github.com/gopxl/beep/effects"
 	"github.com/gopxl/beep/mp3"
 	"github.com/gopxl/beep/speaker"
 )
 
+var docStyle = lipgloss.NewStyle().Margin(1, 2)
+
+type item struct {
+	title, desc string
+}
+
+func (i item) Title() string       { return i.title }
+func (i item) Description() string { return i.desc }
+func (i item) FilterValue() string { return i.title }
+
+type listKeyMap struct {
+	volumeUp   key.Binding
+	volumeDown key.Binding
+	playPause  key.Binding
+	selectItem key.Binding
+}
+
+func newListKeyMap() *listKeyMap {
+	return &listKeyMap{
+		volumeUp: key.NewBinding(
+			key.WithKeys("u"),
+			key.WithHelp("u", "incr. Volume"),
+		),
+		volumeDown: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("d", "decr. Volume"),
+		),
+		playPause: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "Play/Pause"),
+		),
+		selectItem: key.NewBinding(
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "Star Playing a song"),
+		),
+	}
+}
+
 type model struct {
-	items         []string
+	list          list.Model
 	selected      int
 	isPlaying     bool
 	closingSignal chan struct{}
@@ -31,29 +72,20 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
 
+	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q":
+		case "ctrl+c":
 			return m, tea.Quit
 
-		case "k":
-			if m.selected > 0 {
-				m.selected--
-			}
-
-		case "j":
-			if m.selected < len(m.items)-1 {
-				m.selected++
-			}
-
 		case "enter":
+			song := m.list.SelectedItem().(item).Title()
 			if m.isPlaying {
 				m.closingSignal <- struct{}{} // Stop currently playing music
 			}
 			m.isPlaying = true
-			go m.playMusic(m.items[m.selected])
+			go m.playMusic(song)
 		case "p":
 			m.pauseSignal <- struct{}{}
 			m.isPaused = !m.isPaused
@@ -66,34 +98,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.volDown <- struct{}{}
 			m.volume -= 1
 		}
+	case tea.WindowSizeMsg:
+		h, v := docStyle.GetFrameSize()
+		m.list.SetSize(msg.Width-h, msg.Height-v)
+
 	}
 
-	return m, nil
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+	return m, cmd
 }
 
 func (m model) View() string {
-	s := "Choose a song:\n\n"
-
-	for i, item := range m.items {
-		cursor := " " // no cursor
-		if m.selected == i {
-			cursor = ">" // current cursor
-		}
-		s += fmt.Sprintf("%s %s\n", cursor, item)
-	}
-
-	if !m.isPaused && m.isPlaying {
-		s += "\n[Playing]... press \"p\" to pause\n"
-	} else if !m.isPlaying {
-		s += "\n[Not Started]... press \"<Enter>\" to start\n"
-	} else {
-		s += "\n[Paused]... press \"p\" to play\n"
-	}
-
-	s += fmt.Sprintf("\nVolume  :%v\n", m.volume)
-	s += "Vol+ : 'u', Vol- : 'd'\n"
-	s += "\nPress 'q' to quit.\n"
-	return s
+	return docStyle.Render(m.list.View())
+	// if !m.isPaused && m.isPlaying {
+	// 	s += "\n[Playing]... press \"p\" to pause\n"
+	// } else if !m.isPlaying {
+	// 	s += "\n[Not Started]... press \"<Enter>\" to start\n"
+	// } else {
+	// 	s += "\n[Paused]... press \"p\" to play\n"
+	// }
+	//
+	// s += fmt.Sprintf("\nVolume  :%v\n", m.volume)
+	// s += "Vol+ : 'u', Vol- : 'd'\n"
+	// s += "\nPress 'q' to quit.\n"
+	// return s
 }
 
 func (m *model) playMusic(filepath string) {
@@ -162,13 +191,17 @@ func (m *model) playMusic(filepath string) {
 }
 
 func main() {
-	items, err := filepath.Glob("*.mp3")
+	fileNames, err := filepath.Glob("*.mp3")
 	if err != nil {
 		log.Fatal("error listing files")
 	}
+	var itemList []list.Item
+	for _, fileName := range fileNames {
+		itemList = append(itemList, item{title: fileName, desc: "A random Song"})
+	}
 
 	m := model{
-		items:         items,
+		list:          list.New(itemList, list.NewDefaultDelegate(), 0, 0),
 		closingSignal: make(chan struct{}),
 		isPlaying:     false,
 		pauseSignal:   make(chan struct{}), // unbuffered channel
@@ -177,7 +210,23 @@ func main() {
 		volDown:       make(chan struct{}), // unbuffered channel
 	}
 
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+	listkeys := newListKeyMap()
+
+	m.list.AdditionalFullHelpKeys = func() []key.Binding {
+		return []key.Binding{
+			listkeys.playPause,
+			listkeys.volumeUp,
+			listkeys.volumeDown,
+			listkeys.selectItem,
+		}
+	}
+
+	/* FIXME: Problem in filterin, when filtering and there is no item with the name, then it panics, and returns, also freezing for somehow, So for now it's DISABLED.*/
+	m.list.SetFilteringEnabled(false)
+
+	p := tea.NewProgram(m, tea.WithAltScreen())
+
+	if _, err := p.Run(); err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
