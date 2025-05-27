@@ -1,4 +1,4 @@
-module gomp
+module github.com/SoumyaCO/gomp
 
 go 1.22.4
 
